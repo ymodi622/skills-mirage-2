@@ -1,11 +1,12 @@
 from pymongo.database import Database
-from typing import List, Optional
+from typing import List, Optional, Union
 from bson import ObjectId
 from bson.errors import InvalidId
 from pymongo.errors import DuplicateKeyError, PyMongoError
 from fastapi import HTTPException, status
 
-from app.models.skill import Skill
+from app.models.skill import Skill, SkillItem
+
 
 class SkillService:
     @staticmethod
@@ -88,4 +89,82 @@ class SkillService:
                 detail="Database error while saving skill."
             )
 
-    
+    @staticmethod
+    def create_skills_batch(
+        db: Database,
+        items: List[Union[SkillItem, Skill, str, dict]],
+    ) -> dict:
+        """
+        Bulk upsert skills into the master skills collection.
+        Deduplicates names and handles case-insensitive uniqueness.
+        """
+        if not items:
+            return {
+                "total_submitted": 0,
+                "inserted": 0,
+                "existing": 0,
+                "message": "No skills provided.",
+            }
+
+        normalized = []
+        seen = set()
+
+        for item in items:
+            if isinstance(item, str):
+                name = item.strip()
+                category = "tech"
+            elif isinstance(item, (SkillItem, Skill)):
+                name = item.name.strip()
+                cat_val = item.category.value if hasattr(item.category, "value") else str(item.category)
+                category = cat_val
+            elif isinstance(item, dict):
+                name = str(item.get("name", "")).strip()
+                category = str(item.get("category", "tech")).strip()
+            else:
+                continue
+
+            if not name:
+                continue
+
+            lower_name = name.lower()
+            if lower_name in seen:
+                continue
+            seen.add(lower_name)
+            normalized.append({"name": name, "category": category})
+
+        if not normalized:
+            return {
+                "total_submitted": len(items),
+                "inserted": 0,
+                "existing": 0,
+                "message": "No valid skill names provided.",
+            }
+
+        # Check existing skill names to avoid duplicate insertions
+        existing_docs = list(db["skills"].find({}, {"name": 1}))
+        existing_names = {d["name"].lower() for d in existing_docs if "name" in d}
+
+        to_insert = [
+            doc for doc in normalized
+            if doc["name"].lower() not in existing_names
+        ]
+
+        inserted_count = 0
+        if to_insert:
+            try:
+                res = db["skills"].insert_many(to_insert, ordered=False)
+                inserted_count = len(res.inserted_ids)
+            except PyMongoError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Database error during bulk skills insert: {str(exc)}"
+                )
+
+        existing_count = len(normalized) - inserted_count
+
+        return {
+            "total_submitted": len(items),
+            "inserted": inserted_count,
+            "existing": existing_count,
+            "message": f"Successfully processed {len(items)} skills ({inserted_count} newly inserted, {existing_count} already existed).",
+        }

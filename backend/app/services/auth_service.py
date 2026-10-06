@@ -84,6 +84,8 @@ class AuthService:
         if user_doc is None:
             raise credentials_exception
         user_doc["_id"] = str(user_doc["_id"])
+        if "skills" in user_doc and isinstance(user_doc["skills"], list):
+            user_doc["skills"] = [str(s) for s in user_doc["skills"]]
         return User(**user_doc)
 
 

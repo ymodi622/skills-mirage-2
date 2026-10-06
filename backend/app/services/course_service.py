@@ -241,6 +241,12 @@ class CourseService:
         """
         from app.scrapers.courses import CourseScraper, CourseScraperRequest
 
+        if sources:
+            clean_sources = []
+            for s in sources:
+                clean_sources.extend([item.strip() for item in s.split(",") if item.strip()])
+            sources = clean_sources
+
         req = CourseScraperRequest(
             keyword=keyword,
             max_results=max_results,

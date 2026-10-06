@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from math import ceil
 from typing import Any, Dict, List, Optional
 
 from bson import ObjectId
@@ -220,3 +221,112 @@ class JobService:
         if not result:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found.")
         return _fmt_job(result)
+
+    # ── Smart incremental scrape helpers ──────────────────────────────────────
+
+    @staticmethod
+    def get_staleness_hours(
+        db: Database,
+        search_term: str,
+        location: str,
+    ) -> Optional[float]:
+        """
+        Returns how many hours ago the most-recent matching job was scraped
+        into the DB (based on `created_at`), or None if no jobs exist yet
+        for this search_term+location combination.
+
+        Used by GapService to decide whether a fresh scrape is needed:
+            hours = JobService.get_staleness_hours(db, term, location)
+            if hours is None or hours > STALE_THRESHOLD_HOURS:
+                # trigger scraper
+        """
+        doc = (
+            db["jobs"]
+            .find(
+                {
+                    "title": {"$regex": search_term, "$options": "i"},
+                    "location": {"$regex": location, "$options": "i"},
+                }
+            )
+            .sort("created_at", -1)
+            .limit(1)
+        )
+        latest = next(doc, None)
+        if latest is None:
+            return None  # no jobs at all for this query → definitely stale
+
+        now = datetime.now(timezone.utc)
+        latest_ts = latest["created_at"]
+        # Ensure timezone-aware comparison
+        if latest_ts.tzinfo is None:
+            latest_ts = latest_ts.replace(tzinfo=timezone.utc)
+        delta_hours = (now - latest_ts).total_seconds() / 3600
+        return round(delta_hours, 2)
+
+    @staticmethod
+    def upsert_jobs(db: Database, jobs: List[dict]) -> dict:
+        """
+        Insert-or-update a list of job dicts, using `source_url` as the
+        natural deduplication key.
+
+        - If a job with the same source_url already exists → update its
+          fields (skills, description, updated_at) without creating a duplicate.
+        - If it's brand-new → insert it.
+        - Jobs with no source_url fall back to a composite key:
+          (title, company, location).
+
+        Returns a summary dict: { inserted, updated, skipped }.
+        """
+        inserted = updated = skipped = 0
+        now = datetime.now(timezone.utc)
+
+        for job in jobs:
+            try:
+                # ── Build the unique filter key ──────────────────────────────
+                if job.get("source_url"):
+                    filt = {"source_url": job["source_url"]}
+                else:
+                    # Fallback composite key for jobs without a direct URL
+                    filt = {
+                        "title":    job.get("title"),
+                        "company":  job.get("company"),
+                        "location": job.get("location"),
+                    }
+
+                # ── Prepare the document to store / update ───────────────────
+                job_doc = {
+                    **job,
+                    "updated_at": now,
+                }
+                # Only set created_at when inserting (don't overwrite on update)
+                result = db["jobs"].update_one(
+                    filt,
+                    [
+                        # Stage 1: set all incoming fields
+                        {"$set": job_doc},
+                        # Stage 2: preserve original created_at if it exists
+                        {"$set": {
+                            "created_at": {
+                                "$cond": [
+                                    {"$gt": ["$created_at", None]},
+                                    "$created_at",      # keep existing
+                                    now,                # set on first insert
+                                ]
+                            }
+                        }},
+                    ],
+                    upsert=True,
+                )
+
+                if result.upserted_id:
+                    inserted += 1
+                elif result.modified_count:
+                    updated += 1
+                else:
+                    skipped += 1   # matched but no fields changed
+
+            except PyMongoError:
+                skipped += 1       # don't abort the whole batch on one error
+                continue
+
+        return {"inserted": inserted, "updated": updated, "skipped": skipped}

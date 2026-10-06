@@ -1,3 +1,4 @@
+import re
 from datetime import datetime, timezone
 from typing import List, Optional, Dict, Any
 
@@ -7,6 +8,7 @@ from fastapi import HTTPException, status
 from pymongo.database import Database
 from pymongo.errors import PyMongoError
 
+from app.models.skill import Skill
 from app.schemas.user import UserProfileCreate, UserProfileUpdate
 
 
@@ -14,7 +16,53 @@ def _fmt_user(doc: dict) -> dict:
     """Stringify _id and strip the password before returning to the caller."""
     doc["_id"] = str(doc["_id"])
     doc.pop("password", None)
+    if "skills" in doc and isinstance(doc["skills"], list):
+        doc["skills"] = [str(s) for s in doc["skills"]]
+    else:
+        doc["skills"] = []
     return doc
+
+
+def _resolve_skill_ids(db: Database, skill_inputs: List[str]) -> List[ObjectId]:
+    """
+    Given a list of skill names or ObjectId hex strings, looks up their
+    corresponding MongoDB ObjectId from the master skills collection.
+    Strictly requires skills to already exist in the master catalog.
+    Raises HTTPException (400) if any skill is not found.
+    """
+    resolved_ids: List[ObjectId] = []
+    missing_skills: List[str] = []
+
+    for item in skill_inputs:
+        item_clean = item.strip()
+        if not item_clean:
+            continue
+
+        skill_doc = None
+        if ObjectId.is_valid(item_clean):
+            skill_doc = db["skills"].find_one({"_id": ObjectId(item_clean)})
+
+        if not skill_doc:
+            skill_doc = db["skills"].find_one(
+                {"name": {"$regex": f"^{re.escape(item_clean)}$", "$options": "i"}}
+            )
+
+        if skill_doc:
+            if skill_doc["_id"] not in resolved_ids:
+                resolved_ids.append(skill_doc["_id"])
+        else:
+            missing_skills.append(item_clean)
+
+    if missing_skills:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"The following skill(s) do not exist in the master catalog: "
+                f"{', '.join(missing_skills)}. You can only select from existing master skills."
+            ),
+        )
+
+    return resolved_ids
 
 
 def _resolve_id(user_id: str) -> ObjectId:
@@ -58,6 +106,7 @@ class UserService:
             "is_student": payload.is_student,
             "current_job": payload.current_job.model_dump() if payload.current_job else None,
             "interests": payload.interests or [],
+            "skills": _resolve_skill_ids(db, payload.skills) if payload.skills is not None else [],
             "updated_at": datetime.now(timezone.utc),
         }
 
@@ -151,6 +200,9 @@ class UserService:
         if payload.interests is not None:
             update_fields["interests"] = payload.interests
 
+        if payload.skills is not None:
+            update_fields["skills"] = _resolve_skill_ids(db, payload.skills)
+
         if not update_fields:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -191,3 +243,67 @@ class UserService:
         if result.deleted_count == 0:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found.")
         return {"detail": "User deleted successfully.", "user_id": user_id}
+
+    # ── USER SKILLS MANAGEMENT ───────────────────────────────────────────────
+
+    @staticmethod
+    def get_user_skills(db: Database, user_id: str) -> List[Skill]:
+        """Fetch full skill documents attached to a user."""
+        from app.services.skill_service import SkillService
+        return SkillService.get_skills(db=db, user_id=user_id)
+
+    @staticmethod
+    def add_user_skills(db: Database, user_id: str, skills: List[str]) -> List[Skill]:
+        """
+        Add skills to a user's profile by skill names or IDs (deduplicated).
+        Returns the updated list of Skill documents.
+        """
+        obj_id = _resolve_id(user_id)
+        resolved_ids = _resolve_skill_ids(db, skills)
+
+        if not resolved_ids:
+            return UserService.get_user_skills(db, user_id)
+
+        try:
+            db["users"].update_one(
+                {"_id": obj_id},
+                {
+                    "$addToSet": {"skills": {"$each": resolved_ids}},
+                    "$set": {"updated_at": datetime.now(timezone.utc)},
+                },
+            )
+        except PyMongoError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Database error while adding user skills: {str(exc)}",
+            )
+
+        return UserService.get_user_skills(db, user_id)
+
+    @staticmethod
+    def remove_user_skills(db: Database, user_id: str, skills: List[str]) -> List[Skill]:
+        """
+        Remove skills from a user's profile by skill names or IDs.
+        Returns the remaining list of Skill documents.
+        """
+        obj_id = _resolve_id(user_id)
+        resolved_ids = _resolve_skill_ids(db, skills)
+
+        if not resolved_ids:
+            return UserService.get_user_skills(db, user_id)
+
+        try:
+            db["users"].update_one(
+                {"_id": obj_id},
+                {
+                    "$pull": {"skills": {"$in": resolved_ids}},
+                    "$set": {"updated_at": datetime.now(timezone.utc)},
+                },
+            )
+        except PyMongoError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Database error while removing user skills: {str(exc)}",
+            )
+
+        return UserService.get_user_skills(db, user_id)

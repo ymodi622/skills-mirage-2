@@ -1,4 +1,4 @@
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
 from datetime import datetime, timezone
 from typing import Optional, List
 
@@ -32,6 +32,14 @@ class User(BaseModel):
     current_job: Optional[CurrentJob] = None
 
     interests: List[str] = Field(default_factory=list)
+    skills: List[str] = Field(default_factory=list)
+
+    @field_validator("skills", mode="before")
+    @classmethod
+    def convert_skills_to_str(cls, v):
+        if isinstance(v, list):
+            return [str(item) for item in v]
+        return v
 
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

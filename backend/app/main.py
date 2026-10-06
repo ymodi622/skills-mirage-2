@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
-from app.routers import auth, users, jobs, courses, skills, analytics, recommendations, chatbot
+from app.routers import auth, users, jobs, courses, skills, analytics, recommendations, chatbot, gap
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
@@ -26,6 +26,7 @@ app.include_router(skills.router, prefix=f"{settings.API_V1_STR}/skills", tags=[
 app.include_router(analytics.router, prefix=f"{settings.API_V1_STR}/analytics", tags=["Analytics"])
 app.include_router(recommendations.router, prefix=f"{settings.API_V1_STR}/recommendations", tags=["Recommendations"])
 app.include_router(chatbot.router, prefix=f"{settings.API_V1_STR}/chatbot", tags=["Chatbot"])
+app.include_router(gap.router, prefix=f"{settings.API_V1_STR}/gap", tags=["Gap Analysis"])
 
 @app.get("/")
 def read_root():

@@ -4,11 +4,13 @@ from fastapi import APIRouter, Depends, Query, status
 from pymongo.database import Database
 
 from app.core.database import get_db
+from app.models.skill import Skill
 from app.models.user import User
 from app.schemas.user import (
     UserProfileCreate,
     UserProfileResponse,
     UserProfileUpdate,
+    UserSkillsPayload,
 )
 from app.services.auth_service import AuthService
 from app.services.user_service import UserService
@@ -96,6 +98,55 @@ def update_me(
     db: Database = Depends(get_db),
 ):
     return UserService.update_user(db=db, user_id=current_user.id, payload=payload)
+
+
+# ── GET / POST / DELETE current user's skills ────────────────────────────────
+
+@router.get(
+    "/me/skills",
+    response_model=List[Skill],
+    summary="Get my skills",
+    description="Returns the full list of skills currently attached to the logged-in user profile.",
+)
+def get_my_skills(
+    current_user: User = Depends(AuthService.get_current_user),
+    db: Database = Depends(get_db),
+):
+    return UserService.get_user_skills(db=db, user_id=current_user.id)
+
+
+@router.post(
+    "/me/skills",
+    response_model=List[Skill],
+    status_code=status.HTTP_200_OK,
+    summary="Add skills to my profile",
+    description=(
+        "Adds one or more skills to the logged-in user's profile. "
+        "Accepts either skill names (e.g. 'Python') or skill ObjectIds. "
+        "Automatically deduplicates and returns the updated skills list."
+    ),
+)
+def add_my_skills(
+    payload: UserSkillsPayload,
+    current_user: User = Depends(AuthService.get_current_user),
+    db: Database = Depends(get_db),
+):
+    return UserService.add_user_skills(db=db, user_id=current_user.id, skills=payload.skills)
+
+
+@router.delete(
+    "/me/skills",
+    response_model=List[Skill],
+    status_code=status.HTTP_200_OK,
+    summary="Remove skills from my profile",
+    description="Removes one or more skills from the logged-in user's profile by name or ObjectId.",
+)
+def remove_my_skills(
+    payload: UserSkillsPayload,
+    current_user: User = Depends(AuthService.get_current_user),
+    db: Database = Depends(get_db),
+):
+    return UserService.remove_user_skills(db=db, user_id=current_user.id, skills=payload.skills)
 
 
 # ── DELETE current user's account ─────────────────────────────────────────────

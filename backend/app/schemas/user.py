@@ -46,6 +46,7 @@ class UserProfileCreate(BaseModel):
     is_student: bool = False
     current_job: Optional[CurrentJobSchema] = None
     interests: Optional[List[str]] = None
+    skills: Optional[List[str]] = None
 
 
 class UserProfileUpdate(BaseModel):
@@ -60,6 +61,15 @@ class UserProfileUpdate(BaseModel):
     is_student: Optional[bool] = None
     current_job: Optional[CurrentJobSchema] = None
     interests: Optional[List[str]] = None
+    skills: Optional[List[str]] = None
+
+
+class UserSkillsPayload(BaseModel):
+    skills: List[str] = Field(
+        ...,
+        description="List of skill names (e.g. ['Python', 'Docker']) or skill ObjectIds",
+        examples=[["Python", "FastAPI", "MongoDB"]],
+    )
 
 
 class UserProfileResponse(BaseModel):
@@ -73,6 +83,7 @@ class UserProfileResponse(BaseModel):
     is_student: bool = False
     current_job: Optional[CurrentJobSchema] = None
     interests: List[str] = []
+    skills: List[str] = []
 
     model_config = {
         "populate_by_name": True,

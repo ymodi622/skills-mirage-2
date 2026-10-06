@@ -48,6 +48,12 @@ class ScrapeRequest(BaseModel):
         country         : jobspy country_indeed value (default: "India")
         sites           : platforms to scrape (default: linkedin + naukri)
         proxies         : optional proxy list to unblock Indeed / Glassdoor
+        hours_old       : only fetch jobs posted within the last N hours.
+                          None (default) → no time restriction.
+                          Note: this is relative ("last N hours"), not absolute.
+                          For absolute date-range queries use the DB layer.
+                          ⚠ LinkedIn: conflicts with easy_apply filter.
+                          ⚠ Google Jobs: parameter is often ignored.
     """
     # ── Platform availability notes (from India) ──────────────────────────────
     #   linkedin  ✅ Works — HTML scraping + description-based skill extraction
@@ -65,6 +71,11 @@ class ScrapeRequest(BaseModel):
     country: str = "India"
     sites: list[str] = Field(default_factory=lambda: ["linkedin", "naukri"])
     proxies: Optional[list[str]] = None
+    hours_old: Optional[int] = Field(
+        default=None,
+        ge=1,
+        description="Only fetch jobs posted within the last N hours. None = no restriction.",
+    )
 
     @field_validator("search_term", "location")
     @classmethod
@@ -142,6 +153,7 @@ class Scraper:
                 fetch_description=True,      # needed for LinkedIn skill extraction
                 description_format="plain",  # plain text is easiest to parse
                 proxies=self.request.proxies,
+                hours_old=self.request.hours_old,  # None → no restriction
             )
             log.info(f"Fetched {len(df)} raw rows")
             return df

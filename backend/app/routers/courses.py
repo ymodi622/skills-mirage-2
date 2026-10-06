@@ -173,3 +173,4 @@ def scrape_courses(
         sources=sources,
         max_results=max_results,
     )
+
